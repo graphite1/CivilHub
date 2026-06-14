@@ -758,24 +758,34 @@ class CivilHubApp:
         footer.pack(fill=X)
         self.status_var = StringVar(value=f"DB: {DB_PATH.name}")
         ttk.Label(footer, textvariable=self.status_var).pack(side=LEFT)
+        ttk.Button(footer, text="開発用初期化", command=self.reset_debug_data).pack(side=RIGHT)
 
     def build_project_panel(self, parent: ttk.Frame) -> None:
         top = ttk.Frame(parent)
         top.pack(fill=X)
         ttk.Label(top, text="工事一覧", font=("Yu Gothic UI", 12, "bold")).pack(side=LEFT)
-        ttk.Button(top, text="+ 工事登録", command=self.add_project).pack(side=RIGHT)
-        ttk.Button(top, text="工事編集", command=self.edit_selected_project).pack(side=RIGHT, padx=(0, 6))
-        ttk.Button(top, text="CSV取込", command=self.import_projects_csv).pack(side=RIGHT, padx=(0, 6))
-        ttk.Button(top, text="台帳Excel取込", command=self.import_ledger_excel).pack(side=RIGHT, padx=(0, 6))
-        ttk.Button(top, text="台帳反映", command=self.reflect_project_to_ledger).pack(side=RIGHT, padx=(0, 6))
-        ttk.Button(top, text="工事削除", command=self.delete_selected_project).pack(side=RIGHT, padx=(0, 6))
-        ttk.Button(top, text="初期化", command=self.reset_debug_data).pack(side=RIGHT, padx=(0, 6))
+
+        ttk.Label(parent, text="工事を選択して、施工体制と添付書類を管理します。").pack(anchor="w", pady=(8, 0))
+
+        primary_buttons = ttk.Frame(parent)
+        primary_buttons.pack(fill=X, pady=(8, 0))
+        ttk.Button(primary_buttons, text="+ 工事登録", command=self.add_project).pack(side=LEFT)
+        ttk.Button(primary_buttons, text="工事編集", command=self.edit_selected_project).pack(side=LEFT, padx=(6, 0))
+
+        ledger_buttons = ttk.Frame(parent)
+        ledger_buttons.pack(fill=X, pady=(6, 0))
+        ttk.Button(ledger_buttons, text="台帳Excel取込", command=self.import_ledger_excel).pack(side=LEFT)
+        ttk.Button(ledger_buttons, text="台帳反映コピー作成", command=self.reflect_project_to_ledger).pack(side=LEFT, padx=(6, 0))
+
+        support_buttons = ttk.Frame(parent)
+        support_buttons.pack(fill=X, pady=(6, 0))
+        ttk.Button(support_buttons, text="工事再読込", command=self.refresh_projects).pack(side=LEFT)
+        ttk.Button(support_buttons, text="CSV取込", command=self.import_projects_csv).pack(side=LEFT, padx=(6, 0))
+        ttk.Button(support_buttons, text="工事削除", command=self.delete_selected_project).pack(side=LEFT, padx=(6, 0))
 
         self.project_list = tk.Listbox(parent, height=18)
         self.project_list.pack(fill=BOTH, expand=True, pady=(8, 8))
         self.project_list.bind("<<ListboxSelect>>", self.on_project_selected)
-
-        ttk.Button(parent, text="工事再読込", command=self.refresh_projects).pack(fill=X)
 
     def build_company_panel(self, parent: ttk.Frame) -> None:
         top = ttk.Frame(parent)
@@ -783,6 +793,7 @@ class CivilHubApp:
         ttk.Label(top, text="施工体制ツリー", font=("Yu Gothic UI", 12, "bold")).pack(side=LEFT)
         ttk.Button(top, text="+ 元請", command=self.add_root_company).pack(side=RIGHT)
         ttk.Button(top, text="+ 子業者", command=self.add_child_company).pack(side=RIGHT, padx=(0, 6))
+        ttk.Label(parent, text="工事を選択し、元請から順に施工体制を登録します。").pack(anchor="w", pady=(8, 0))
 
         columns = ("level", "work_type")
         self.company_tree = ttk.Treeview(parent, columns=columns, show="tree headings", height=22)
@@ -792,13 +803,14 @@ class CivilHubApp:
         self.company_tree.column("#0", width=260)
         self.company_tree.column("level", width=100, anchor="center")
         self.company_tree.column("work_type", width=140)
-        self.company_tree.pack(fill=BOTH, expand=True, pady=(8, 0))
+        self.company_tree.pack(fill=BOTH, expand=True, pady=(6, 0))
         self.company_tree.bind("<<TreeviewSelect>>", self.on_company_selected)
 
     def build_detail_panel(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="選択業者の詳細", font=("Yu Gothic UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(parent, text="施工体制ツリーで業者を選択すると詳細を確認できます。").pack(anchor="w", pady=(8, 0))
         self.detail_text = tk.Text(parent, width=42, height=26)
-        self.detail_text.pack(fill=BOTH, expand=True, pady=(8, 8))
+        self.detail_text.pack(fill=BOTH, expand=True, pady=(6, 8))
         self.detail_text.configure(state="disabled")
 
         button_row = ttk.Frame(parent)
@@ -811,6 +823,7 @@ class CivilHubApp:
         top.pack(fill=X)
         ttk.Label(top, text="必要添付書類", font=("Yu Gothic UI", 11, "bold")).pack(side=LEFT)
         ttk.Button(top, text="状態更新", command=self.edit_selected_document).pack(side=RIGHT)
+        ttk.Label(parent, text="不足・未確認・期限切れを優先して確認してください。行のダブルクリックでも状態更新できます。").pack(anchor="w", pady=(8, 0))
 
         columns = ("document_name", "required", "status", "expiry_date", "attachment_count", "note")
         self.document_tree = ttk.Treeview(parent, columns=columns, show="headings", height=12)
@@ -824,9 +837,9 @@ class CivilHubApp:
         self.document_tree.column("required", width=60, anchor="center")
         self.document_tree.column("status", width=100, anchor="center")
         self.document_tree.column("expiry_date", width=120, anchor="center")
-        self.document_tree.column("attachment_count", width=70, anchor="center")
+        self.document_tree.column("attachment_count", width=100, anchor="center")
         self.document_tree.column("note", width=380)
-        self.document_tree.pack(fill=BOTH, expand=True, pady=(8, 0))
+        self.document_tree.pack(fill=BOTH, expand=True, pady=(6, 0))
         self.document_tree.bind("<<TreeviewSelect>>", self.on_document_selected)
         self.document_tree.bind("<Double-1>", lambda _event: self.edit_selected_document())
 
@@ -859,7 +872,8 @@ class CivilHubApp:
         self.project_map.clear()
         selected_index: int | None = None
         for row in self.db.list_projects():
-            line = f"{row['name']} / {row['construction_no']}"
+            term = f"{row['start_date'] or '-'} - {row['end_date'] or '-'}"
+            line = f"{row['name']} / {row['construction_no']} / {row['client_name']} / {term}"
             self.project_map[line] = row["id"]
             current_index = self.project_list.size()
             self.project_list.insert(END, line)
@@ -873,6 +887,7 @@ class CivilHubApp:
             self.project_list.selection_set(0)
             self.on_project_selected()
         elif self.project_list.size() == 0:
+            self.project_list.insert(END, "工事が登録されていません。「+ 工事登録」または「台帳Excel取込」から開始してください。")
             self.clear_project_selection()
 
     def on_project_selected(self, _event: object | None = None) -> None:
@@ -881,6 +896,9 @@ class CivilHubApp:
             self.clear_project_selection()
             return
         label = self.project_list.get(selection[0])
+        if label not in self.project_map:
+            self.clear_project_selection()
+            return
         self.selection.project_id = self.project_map[label]
         self.selection.company_id = None
         self.selection.document_id = None
@@ -908,9 +926,14 @@ class CivilHubApp:
 
         project_id = self.selection.project_id
         if project_id is None:
+            self.company_tree.insert("", END, text="左の工事を選択してください", values=("", ""))
             return
 
         companies = self.db.list_companies(project_id)
+        if not companies:
+            self.company_tree.insert("", END, text="+ 元請 から施工体制を登録してください", values=("", ""))
+            return
+
         by_parent: dict[int | None, list[sqlite3.Row]] = {}
         for row in companies:
             by_parent.setdefault(row["parent_company_id"], []).append(row)
@@ -941,6 +964,8 @@ class CivilHubApp:
         if not selected:
             return
         tree_id = selected[0]
+        if tree_id not in self.company_tree_map:
+            return
         company_id = self.company_tree_map[tree_id]
         self.selection.company_id = company_id
         self.selection.document_id = None
@@ -957,9 +982,11 @@ class CivilHubApp:
 
         company_id = self.selection.company_id
         if company_id is None:
+            self.document_tree.insert("", END, values=("業者を選択すると必要添付書類を表示します", "", "", "", "", ""))
             return
 
         for row in self.db.list_required_documents(company_id):
+            attachment_count = int(row["attachment_count"])
             item_id = self.document_tree.insert(
                 "",
                 END,
@@ -968,7 +995,7 @@ class CivilHubApp:
                     "○" if row["required"] else "-",
                     row["status"],
                     row["expiry_date"] or "",
-                    row["attachment_count"],
+                    "0 (未添付)" if attachment_count == 0 else str(attachment_count),
                     row["note"] or "",
                 ),
                 tags=(row["status"],),
@@ -978,6 +1005,8 @@ class CivilHubApp:
     def on_document_selected(self, _event: object | None = None) -> None:
         selected = self.document_tree.selection()
         if not selected:
+            return
+        if selected[0] not in self.document_tree_map:
             return
         self.selection.document_id = self.document_tree_map[selected[0]]
         self.selection.attachment_id = None
@@ -990,6 +1019,7 @@ class CivilHubApp:
 
         document_id = self.selection.document_id
         if document_id is None:
+            self.attachment_tree.insert("", END, values=("書類を選択すると添付ファイルを表示します", "", "", ""))
             return
         for row in self.db.list_attachments(document_id):
             item_id = self.attachment_tree.insert(
@@ -1003,27 +1033,40 @@ class CivilHubApp:
         selected = self.attachment_tree.selection()
         if not selected:
             return
+        if selected[0] not in self.attachment_tree_map:
+            return
         self.selection.attachment_id = self.attachment_tree_map[selected[0]]
 
     def update_detail(self, company: sqlite3.Row | None) -> None:
         self.detail_text.configure(state="normal")
         self.detail_text.delete("1.0", END)
         if company is None:
-            self.detail_text.insert("1.0", "業者を選択すると詳細を表示します。")
+            self.detail_text.insert("1.0", "業者を選択すると詳細を表示します。\n\n工事を選択後、施工体制ツリーから対象業者を選択してください。")
         else:
             lines = [
+                "基本情報",
+                "------------------------------",
                 f"会社名: {company['name']}",
                 f"階層: {LEVEL_LABELS.get(company['level'], company['level'])}",
                 f"会社名カナ: {company['kana'] or ''}",
                 f"代表者名: {company['representative'] or ''}",
                 f"所在地: {company['address'] or ''}",
                 f"電話番号: {company['phone'] or ''}",
+                "",
+                "許可・担当",
+                "------------------------------",
                 f"建設業許可番号: {company['license_no'] or ''}",
                 f"許可有効期限: {company['license_expiry'] or ''}",
                 f"担当工種: {company['work_type'] or ''}",
+                "",
+                "契約・施工予定",
+                "------------------------------",
                 f"契約日: {company['contract_date'] or ''}",
                 f"施工開始予定日: {company['planned_start_date'] or ''}",
                 f"施工終了予定日: {company['planned_end_date'] or ''}",
+                "",
+                "技術者・安全衛生",
+                "------------------------------",
                 f"主任技術者名: {company['chief_engineer_name'] or ''}",
                 f"主任技術者資格: {company['chief_engineer_license'] or ''}",
                 f"安全衛生責任者: {company['safety_manager'] or ''}",
@@ -1089,10 +1132,16 @@ class CivilHubApp:
 
     def reset_debug_data(self) -> None:
         confirmed = messagebox.askyesno(
-            "初期化",
-            "デバッグ用初期化を実行します。\n工事、業者、書類、添付、取込履歴をすべて削除します。よろしいですか。",
+            "開発用初期化",
+            "開発用初期化を実行します。\n登録済みの工事、業者、書類、添付情報、取込履歴をすべて削除します。\n通常運用では使用しない操作です。続行しますか。",
         )
         if not confirmed:
+            return
+        final_confirmed = messagebox.askyesno(
+            "最終確認",
+            "本当に全データを初期化しますか。\nこの操作は取り消せません。",
+        )
+        if not final_confirmed:
             return
         self.db.reset_all_data()
         if ATTACHMENTS_ROOT.exists():
@@ -1100,7 +1149,7 @@ class CivilHubApp:
         ATTACHMENTS_ROOT.mkdir(parents=True, exist_ok=True)
         self.clear_project_selection()
         self.refresh_projects()
-        self.status_var.set("デバッグ用初期化を実行しました。")
+        self.status_var.set("開発用初期化を実行しました。")
 
     def import_projects_csv(self) -> None:
         csv_path = filedialog.askopenfilename(
@@ -1170,7 +1219,10 @@ class CivilHubApp:
 
         record = self.load_ledger_project_info(Path(xlsx_path))
         if record is None:
-            messagebox.showerror("台帳Excel取込", "工事情報を読み取れませんでした。")
+            messagebox.showerror(
+                "台帳Excel取込",
+                "施工体制台帳Excelから工事情報を読み取れませんでした。\n先頭シートに工事名称、発注者、工期などの項目があるか確認してください。",
+            )
             return
 
         existing = self.db.find_project_by_name(record["name"])
@@ -1219,15 +1271,27 @@ class CivilHubApp:
             return
         import_row = self.db.get_latest_project_import(project_id, "施工体制台帳")
         if import_row is None:
-            messagebox.showinfo("台帳未取込", "この工事には施工体制台帳の取込履歴がありません。")
+            messagebox.showinfo(
+                "台帳未取込",
+                "この工事には施工体制台帳Excelの取込履歴がありません。\n先に「台帳Excel取込」を実行してください。",
+            )
             return
 
         source_path = Path(import_row["source_path"])
         if not source_path.exists():
-            messagebox.showerror("ファイルなし", f"取込元のExcelが見つかりません。\n{source_path}")
+            messagebox.showerror(
+                "取込元Excelなし",
+                f"台帳反映に使用する取込元Excelが見つかりません。\n移動または削除されていないか確認してください。\n\n{source_path}",
+            )
             return
 
         output_path = build_reflected_copy_path(source_path)
+        confirmed = messagebox.askyesno(
+            "台帳反映コピー作成",
+            f"取込元Excelは変更せず、反映済みコピーを作成します。\n\n出力予定ファイル:\n{output_path}\n\n実行しますか。",
+        )
+        if not confirmed:
+            return
         workbook = load_workbook(source_path)
         sheet_name = import_row["source_sheet"] or workbook.sheetnames[0]
         sheet = workbook[sheet_name]
@@ -1236,7 +1300,10 @@ class CivilHubApp:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         workbook.save(output_path)
         self.status_var.set(f"台帳へ反映しました: {output_path.name}")
-        messagebox.showinfo("台帳反映", f"原本は変更せず、反映済みコピーを保存しました。\n{output_path}")
+        messagebox.showinfo(
+            "台帳反映コピー作成",
+            f"原本は変更せず、反映済みコピーを保存しました。\n\n出力ファイル:\n{output_path.name}\n\n保存先:\n{output_path.parent}",
+        )
 
     def load_project_csv(self, csv_path: Path) -> list[dict[str, str]]:
         standard_field_map = {
@@ -1451,15 +1518,22 @@ class CivilHubApp:
         if not rows:
             messagebox.showinfo("不足一覧", "不足・未確認・期限切れの書類はありません。")
             return
-        lines = [f"{row['company_name']}：{row['document_name']} が{row['status']}" for row in rows]
-        messagebox.showinfo("不足一覧", "\n".join(lines))
+        lines = [f"{index}. [{row['status']}] {row['company_name']} / {row['document_name']}" for index, row in enumerate(rows, start=1)]
+        messagebox.showinfo("不足一覧", f"不足・未確認・期限切れ: {len(rows)}件\n\n" + "\n".join(lines))
 
     def attach_file(self) -> None:
         document_id = self.selection.document_id
         company_id = self.selection.company_id
         project_id = self.selection.project_id
-        if document_id is None or company_id is None or project_id is None:
-            messagebox.showinfo("未選択", "先に工事・業者・書類を選択してください。")
+        missing = []
+        if project_id is None:
+            missing.append("工事")
+        if company_id is None:
+            missing.append("業者")
+        if document_id is None:
+            missing.append("必要添付書類")
+        if missing:
+            messagebox.showinfo("未選択", "添付前に次を選択してください。\n" + "、".join(missing))
             return
 
         path_str = filedialog.askopenfilename(
@@ -1520,7 +1594,7 @@ class CivilHubApp:
         company_id = self.selection.company_id
         project_id = self.selection.project_id
         if document_id is None or company_id is None or project_id is None:
-            messagebox.showinfo("未選択", "先に対象の書類を選択してください。")
+            messagebox.showinfo("未選択", "保存場所を開くには、先に工事・業者・必要添付書類を選択してください。")
             return
 
         project = self.db.get_project(project_id)
