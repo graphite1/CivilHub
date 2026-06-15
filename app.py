@@ -244,6 +244,7 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id INTEGER NOT NULL,
                 relation_document_id INTEGER,
+                company_id INTEGER,
                 import_kind TEXT NOT NULL,
                 mapping_no TEXT,
                 sheet_name TEXT,
@@ -256,7 +257,8 @@ class Database:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
-                FOREIGN KEY(relation_document_id) REFERENCES company_relation_documents(id) ON DELETE CASCADE
+                FOREIGN KEY(relation_document_id) REFERENCES company_relation_documents(id) ON DELETE CASCADE,
+                FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE SET NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_ledger_cell_values_lookup
@@ -266,7 +268,19 @@ class Database:
             ON company_relation_documents(parent_company_id, child_company_id, document_kind);
             """
         )
+        self.ensure_column("ledger_cell_values", "company_id", "INTEGER")
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ledger_cell_values_company
+            ON ledger_cell_values(project_id, import_kind, company_id, cell)
+            """
+        )
         self.conn.commit()
+
+    def ensure_column(self, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def fetchall(self, query: str, params: tuple = ()) -> list[sqlite3.Row]:
         return list(self.conn.execute(query, params))
@@ -463,6 +477,7 @@ class Database:
             (
                 project_id,
                 relation_document_id,
+                None,
                 import_kind,
                 item.get("mapping_no", ""),
                 item.get("sheet_name", ""),
@@ -481,12 +496,41 @@ class Database:
         self.conn.executemany(
             """
             INSERT INTO ledger_cell_values (
-                project_id, relation_document_id, import_kind, mapping_no,
+                project_id, relation_document_id, company_id, import_kind, mapping_no,
                 sheet_name, actual_sheet_name, cell, cell_range, item_name,
                 field, value, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
+        )
+        self.conn.commit()
+
+    def update_ledger_cell_company(
+        self,
+        project_id: int,
+        import_kind: str,
+        relation_document_id: int | None,
+        company_id: int,
+        field_prefixes: tuple[str, ...],
+    ) -> None:
+        if relation_document_id is None:
+            relation_clause = "relation_document_id IS NULL"
+            params: list[object] = [company_id, project_id, import_kind]
+        else:
+            relation_clause = "relation_document_id = ?"
+            params = [company_id, project_id, import_kind, relation_document_id]
+        prefix_clause = " OR ".join("field LIKE ?" for _prefix in field_prefixes)
+        params.extend(f"{prefix}%" for prefix in field_prefixes)
+        self.conn.execute(
+            f"""
+            UPDATE ledger_cell_values
+            SET company_id = ?, updated_at = ?
+            WHERE project_id = ?
+              AND import_kind = ?
+              AND {relation_clause}
+              AND ({prefix_clause})
+            """,
+            (params[0], now_text(), *params[1:]),
         )
         self.conn.commit()
 
@@ -495,7 +539,20 @@ class Database:
         project_id: int,
         import_kind: str,
         relation_document_id: int | None = None,
+        company_id: int | None = None,
     ) -> list[sqlite3.Row]:
+        if company_id is not None:
+            return self.fetchall(
+                """
+                SELECT *
+                FROM ledger_cell_values
+                WHERE project_id = ?
+                  AND import_kind = ?
+                  AND company_id = ?
+                ORDER BY id ASC
+                """,
+                (project_id, import_kind, company_id),
+            )
         if relation_document_id is None:
             return self.fetchall(
                 """
@@ -525,10 +582,11 @@ class Database:
         project_id: int,
         import_kind: str,
         relation_document_id: int | None = None,
+        company_id: int | None = None,
     ) -> dict[str, str]:
         return {
             row["cell"]: row["value"] or ""
-            for row in self.list_ledger_cell_values(project_id, import_kind, relation_document_id)
+            for row in self.list_ledger_cell_values(project_id, import_kind, relation_document_id, company_id)
         }
 
     def ensure_relation_document_for_child(self, child_company_id: int) -> int | None:
@@ -945,7 +1003,7 @@ class ProjectDialog:
         fields = [
             ("工事名", "name"),
             ("工事番号", "construction_no"),
-            ("発注者", "client_name"),
+            ("発注者名", "client_name"),
             ("工期開始日", "start_date"),
             ("工期終了日", "end_date"),
             ("現場代理人", "site_agent"),
@@ -1010,7 +1068,7 @@ class CompanyDialog:
             ("電話番号", "phone"),
             ("建設業許可番号", "license_no"),
             ("許可有効期限", "license_expiry"),
-            ("担当工種", "work_type"),
+            ("担当工事内容", "work_type"),
             ("契約日", "contract_date"),
             ("施工開始予定日", "planned_start_date"),
             ("施工終了予定日", "planned_end_date"),
@@ -1272,7 +1330,7 @@ class CivilHubApp:
         self.company_tree = ttk.Treeview(parent, columns=columns, show="tree headings", height=22)
         self.company_tree.heading("#0", text="会社名")
         self.company_tree.heading("level", text="階層")
-        self.company_tree.heading("work_type", text="担当工種")
+        self.company_tree.heading("work_type", text="担当工事内容")
         self.company_tree.column("#0", width=260)
         self.company_tree.column("level", width=100, anchor="center")
         self.company_tree.column("work_type", width=140)
@@ -1687,8 +1745,16 @@ class CivilHubApp:
             return
         self.selection.relation_attachment_id = self.relation_attachment_tree_map[selected[0]]
 
-    def format_ledger_detail_rows(self, project_id: int, prefix: str, relation_document_id: int | None = None) -> list[str]:
-        rows = self.db.list_ledger_cell_values(project_id, "施工体制台帳", relation_document_id)
+    def format_ledger_detail_rows(
+        self,
+        project_id: int,
+        prefix: str,
+        relation_document_id: int | None = None,
+        company_id: int | None = None,
+    ) -> list[str]:
+        rows = self.db.list_ledger_cell_values(project_id, "施工体制台帳", None, company_id) if company_id is not None else []
+        if not rows:
+            rows = self.db.list_ledger_cell_values(project_id, "施工体制台帳", relation_document_id)
         if not rows and relation_document_id is not None:
             rows = self.db.list_ledger_cell_values(project_id, "施工体制台帳", None)
 
@@ -1708,13 +1774,18 @@ class CivilHubApp:
             ("その他", ()),
         ]
         used_ids: set[int] = set()
+        seen_field_values: set[tuple[str, str]] = set()
         lines: list[str] = []
         for title, markers in categories:
             section_rows = []
             for row in target_rows:
                 row_id = int(row["id"])
                 field = row["field"] or ""
+                value = str(row["value"] or "")
                 if row_id in used_ids:
+                    continue
+                field_value_key = (field, value)
+                if field_value_key in seen_field_values:
                     continue
                 if markers:
                     if not any(marker in field for marker in markers):
@@ -1728,6 +1799,7 @@ class CivilHubApp:
             lines.extend(["", title, "------------------------------"])
             for index, row in enumerate(section_rows, start=1):
                 used_ids.add(int(row["id"]))
+                seen_field_values.add((row["field"] or "", str(row["value"] or "")))
                 item_name = row["item_name"] or row["field"]
                 cell = row["cell"] or ""
                 lines.append(f"{index}. {item_name} ({cell}): {row['value']}")
@@ -1759,7 +1831,7 @@ class CivilHubApp:
                 "------------------------------",
                 f"建設業許可番号: {company['license_no'] or ''}",
                 f"許可有効期限: {company['license_expiry'] or ''}",
-                f"担当工種: {company['work_type'] or ''}",
+                f"担当工事内容: {company['work_type'] or ''}",
                 "",
                 "契約・施工予定",
                 "------------------------------",
@@ -1786,7 +1858,7 @@ class CivilHubApp:
                     f"表示対象: {'元請情報' if prefix == 'prime_contractor.' else '下請情報'}",
                 ]
             )
-            lines.extend(self.format_ledger_detail_rows(company["project_id"], prefix, relation_document_id))
+            lines.extend(self.format_ledger_detail_rows(company["project_id"], prefix, relation_document_id, company["id"]))
             self.detail_text.insert("1.0", "\n".join(lines))
         self.detail_text.configure(state="disabled")
 
@@ -1980,11 +2052,16 @@ class CivilHubApp:
 
         self.db.upsert_project_import(project_id, "施工体制台帳", str(record["source_path"]), record["source_sheet"])
         self.db.replace_ledger_cell_values(project_id, "施工体制台帳", None, self.last_ledger_import_items)
-        prime_sync_result = self.sync_prime_contractor_company(project_id, self.last_ledger_import_items)
+        prime_sync_result, prime_company_id = self.sync_prime_contractor_company(project_id, self.last_ledger_import_items)
+        subcontractor_sync_result = self.sync_selected_contractor_company(
+            project_id,
+            prime_company_id,
+            self.last_ledger_import_items,
+        )
         self.selection.project_id = project_id
         self.refresh_projects()
-        self.status_var.set(f"工事情報Excel取込完了: {action} / {record['name']} / {prime_sync_result}")
-        self.show_ledger_import_summary(action, record, self.last_ledger_import_items, prime_sync_result)
+        self.status_var.set(f"工事情報Excel取込完了: {action} / {record['name']} / {prime_sync_result} / {subcontractor_sync_result}")
+        self.show_ledger_import_summary(action, record, self.last_ledger_import_items, prime_sync_result, subcontractor_sync_result)
 
     def show_ledger_import_summary(
         self,
@@ -1992,6 +2069,7 @@ class CivilHubApp:
         record: dict[str, str],
         mapped_items: list[dict[str, str]],
         prime_sync_result: str = "",
+        subcontractor_sync_result: str = "",
     ) -> None:
         filled_items = [item for item in mapped_items if item["field"] != "__sheet_name" and item["value"]]
         preview_lines = []
@@ -2008,32 +2086,35 @@ class CivilHubApp:
                 f"取込結果: {action}\n"
                 f"工事名: {record['name']}\n"
                 f"元請会社: {prime_sync_result or '処理なし'}\n"
+                f"一次下請: {subcontractor_sync_result or '処理なし'}\n"
                 f"OK行の取得対象: {max(len(mapped_items) - 1, 0)} 件\n"
                 f"値あり項目: {len(filled_items)} 件\n\n"
                 f"取得値の一部:\n{preview}"
             ),
         )
 
-    def sync_prime_contractor_company(self, project_id: int, mapped_items: list[dict[str, str]]) -> str:
+    def sync_prime_contractor_company(self, project_id: int, mapped_items: list[dict[str, str]]) -> tuple[str, int | None]:
         values = self.ledger_items_to_values(mapped_items)
         payload = self.build_prime_contractor_payload(project_id, values)
         prime_name = payload["name"]
         if not prime_name:
-            return "元請会社名なしのためスキップ"
+            return "元請会社名なしのためスキップ", None
 
         root_companies = [company for company in self.db.list_companies(project_id) if int(company["level"]) == 0]
         same_name_company = next((company for company in root_companies if normalize_company_name(company["name"] or "") == prime_name), None)
 
         if same_name_company is not None:
             self.db.update_company(same_name_company["id"], self.merge_company_payload(payload, same_name_company))
-            return f"元請更新: {prime_name}"
+            self.db.update_ledger_cell_company(project_id, "施工体制台帳", None, same_name_company["id"], ("prime_contractor.",))
+            return f"元請更新: {prime_name}", same_name_company["id"]
 
         if root_companies:
             existing_names = "、".join(company["name"] for company in root_companies if company["name"])
-            return f"元請スキップ: 既存元請({existing_names})と名称不一致"
+            return f"元請スキップ: 既存元請({existing_names})と名称不一致", None
 
-        self.db.create_company(payload)
-        return f"元請追加: {prime_name}"
+        company_id = self.db.create_company(payload)
+        self.db.update_ledger_cell_company(project_id, "施工体制台帳", None, company_id, ("prime_contractor.",))
+        return f"元請追加: {prime_name}", company_id
 
     def build_prime_contractor_payload(self, project_id: int, values: dict[str, str]) -> dict[str, str | int | None]:
         prime_name = normalize_company_name(values.get("prime_contractor.basic.company_name_with_corporate_no", ""))
@@ -2059,6 +2140,77 @@ class CivilHubApp:
             "chief_engineer_name": values.get("prime_contractor.engineers.chief_engineer_name", ""),
             "chief_engineer_license": values.get("prime_contractor.engineers.chief_engineer_qualification", ""),
             "safety_manager": "",
+        }
+
+    def sync_selected_contractor_company(
+        self,
+        project_id: int,
+        parent_company_id: int | None,
+        mapped_items: list[dict[str, str]],
+    ) -> str:
+        if parent_company_id is None:
+            return "一次下請スキップ: 元請未確定"
+        values = self.ledger_items_to_values(mapped_items)
+        payload = self.build_selected_contractor_payload(project_id, parent_company_id, values)
+        subcontractor_name = payload["name"]
+        if not subcontractor_name:
+            return "一次下請会社名なしのためスキップ"
+
+        sibling_companies = [
+            company
+            for company in self.db.list_companies(project_id)
+            if company["parent_company_id"] == parent_company_id and int(company["level"]) == 1
+        ]
+        same_name_company = next(
+            (company for company in sibling_companies if normalize_company_name(company["name"] or "") == subcontractor_name),
+            None,
+        )
+
+        if same_name_company is not None:
+            self.db.update_company(same_name_company["id"], self.merge_company_payload(payload, same_name_company))
+            company_id = same_name_company["id"]
+            action = "一次下請更新"
+        else:
+            company_id = self.db.create_company(payload)
+            action = "一次下請追加"
+
+        relation_document_id = self.db.ensure_relation_document_for_child(company_id)
+        self.db.update_ledger_cell_company(project_id, "施工体制台帳", None, company_id, ("selected_contractor.",))
+        if relation_document_id is not None:
+            # 現時点では工事単位の取込セル値を会社に紐づける。関係帳票単位の複数台帳保存は次工程で拡張する。
+            self.db.update_ledger_cell_company(project_id, "施工体制台帳", relation_document_id, company_id, ("selected_contractor.",))
+        return f"{action}: {subcontractor_name}"
+
+    def build_selected_contractor_payload(
+        self,
+        project_id: int,
+        parent_company_id: int,
+        values: dict[str, str],
+    ) -> dict[str, str | int | None]:
+        contractor_name = normalize_company_name(
+            first_non_empty(
+                values.get("selected_contractor.basic.company_name_with_corporate_no", ""),
+                values.get("selected_contractor.basic.company_name", ""),
+            )
+        )
+        return {
+            "project_id": project_id,
+            "parent_company_id": parent_company_id,
+            "level": 1,
+            "name": contractor_name,
+            "kana": "",
+            "representative": values.get("selected_contractor.basic.representative_name", ""),
+            "address": clean_ledger_address(values.get("selected_contractor.basic.address", "")),
+            "phone": clean_ledger_phone(values.get("selected_contractor.basic.phone", "")),
+            "license_no": values.get("selected_contractor.permits.permit_number_1", ""),
+            "license_expiry": parse_wareki_free_date(values.get("selected_contractor.permits.permit_date_1", "")),
+            "work_type": values.get("selected_contractor.basic.work_description", ""),
+            "contract_date": parse_wareki_free_date(values.get("selected_contractor.basic.contract_date", "")),
+            "planned_start_date": parse_wareki_free_date(values.get("selected_contractor.basic.period_start", "").replace("自", "").strip()),
+            "planned_end_date": parse_wareki_free_date(values.get("selected_contractor.basic.period_end", "").replace("至", "").strip()),
+            "chief_engineer_name": values.get("selected_contractor.engineers.chief_engineer_name", ""),
+            "chief_engineer_license": values.get("selected_contractor.engineers.chief_engineer_qualification", ""),
+            "safety_manager": values.get("selected_contractor.engineers.safety_health_manager_name", ""),
         }
 
     def merge_company_payload(
@@ -2299,13 +2451,14 @@ class CivilHubApp:
             companies = self.db.list_companies(project["id"])
             root_company = next((row for row in companies if int(row["level"]) == 0), None)
 
-        imported_cell_values = self.db.ledger_cell_value_map(
-            project["id"],
-            "施工体制台帳",
-            relation_document["id"] if relation_document is not None else None,
-        )
-        if relation_document is not None and not imported_cell_values:
-            imported_cell_values = self.db.ledger_cell_value_map(project["id"], "施工体制台帳", None)
+        imported_cell_values = self.db.ledger_cell_value_map(project["id"], "施工体制台帳", None)
+        if relation_document is not None:
+            relation_cell_values = self.db.ledger_cell_value_map(project["id"], "施工体制台帳", relation_document["id"])
+            imported_cell_values = {**imported_cell_values, **relation_cell_values}
+        if child_company is not None:
+            company_cell_values = self.db.ledger_cell_value_map(project["id"], "施工体制台帳", None, child_company["id"])
+            if company_cell_values:
+                imported_cell_values = {**imported_cell_values, **company_cell_values}
         export_mode = "selected_contractor_ledger" if relation_document is not None else "prime_basic"
         workbook = load_workbook(LEDGER_MASTER_PATH)
         written_count = write_ledger_mapped_workbook(
@@ -2435,14 +2588,14 @@ class CivilHubApp:
 
         if child_company is not None:
             company_payload = {
-                "name": values.get("selected_contractor.basic.company_name_with_corporate_no", child_company["name"] or ""),
+                "name": normalize_company_name(values.get("selected_contractor.basic.company_name_with_corporate_no", child_company["name"] or "")),
                 "kana": child_company["kana"] or "",
                 "representative": values.get("selected_contractor.basic.representative_name", child_company["representative"] or ""),
                 "address": clean_ledger_address(values.get("selected_contractor.basic.address", child_company["address"] or "")),
                 "phone": clean_ledger_phone(values.get("selected_contractor.basic.phone", child_company["phone"] or "")),
                 "license_no": values.get("selected_contractor.permits.permit_number_1", child_company["license_no"] or ""),
                 "license_expiry": parse_wareki_free_date(values.get("selected_contractor.permits.permit_date_1", child_company["license_expiry"] or "")),
-                "work_type": values.get("selected_contractor.basic.work_description", values.get("selected_contractor.permits.permit_business_type_1", child_company["work_type"] or "")),
+                "work_type": values.get("selected_contractor.basic.work_description", child_company["work_type"] or ""),
                 "contract_date": parse_wareki_free_date(values.get("selected_contractor.basic.contract_date", child_company["contract_date"] or "")),
                 "planned_start_date": parse_wareki_free_date(values.get("selected_contractor.basic.period_start", child_company["planned_start_date"] or "").replace("自", "").strip()),
                 "planned_end_date": parse_wareki_free_date(values.get("selected_contractor.basic.period_end", child_company["planned_end_date"] or "").replace("至", "").strip()),
@@ -2451,6 +2604,13 @@ class CivilHubApp:
                 "safety_manager": values.get("selected_contractor.engineers.safety_health_manager_name", child_company["safety_manager"] or ""),
             }
             self.db.update_company(child_company["id"], company_payload)
+            self.db.update_ledger_cell_company(
+                relation_document["project_id"],
+                "施工体制台帳",
+                relation_document["id"],
+                child_company["id"],
+                ("selected_contractor.",),
+            )
 
     def write_project_to_ledger_sheet(self, sheet: object, project: sqlite3.Row) -> None:
         # TODO: 旧方式の直接セル指定処理。セル対応表方式へ統一後に削除候補。
