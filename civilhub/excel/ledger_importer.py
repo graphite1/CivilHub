@@ -87,10 +87,11 @@ def read_ledger_mapped_items(
         source_sheet = workbook[source_sheet_name]
         mapped_items: list[dict[str, str]] = [
             {
-                "sheet_name": source_sheet_name,
-                "actual_sheet_name": source_sheet_name,
-                "cell": "",
-                "cell_range": "",
+                    "sheet_name": source_sheet_name,
+                    "actual_sheet_name": source_sheet_name,
+                    "mapping_no": "",
+                    "cell": "",
+                    "cell_range": "",
                 "item_name": "読取シート",
                 "field": "__sheet_name",
                 "value": source_sheet_name,
@@ -106,14 +107,15 @@ def read_ledger_mapped_items(
                 sheet = source_sheet
             value = sheet[mapping["cell"]].value
             mapped_items.append(
-                {
-                    "sheet_name": mapping["sheet_name"],
-                    "actual_sheet_name": actual_sheet_name,
+                    {
+                        "mapping_no": mapping.get("mapping_no", ""),
+                        "sheet_name": mapping["sheet_name"],
+                        "actual_sheet_name": actual_sheet_name,
                     "cell": mapping["cell"],
                     "cell_range": mapping["cell_range"],
                     "item_name": mapping["item_name"],
                     "field": mapping["field"],
-                    "value": "" if value in (None, "") else str(value).strip(),
+                    "value": "" if value in (None, "") else str(value),
                 }
             )
         return mapped_items

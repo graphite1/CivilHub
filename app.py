@@ -240,6 +240,28 @@ class Database:
                 FOREIGN KEY(relation_document_id) REFERENCES company_relation_documents(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS ledger_cell_values (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                relation_document_id INTEGER,
+                import_kind TEXT NOT NULL,
+                mapping_no TEXT,
+                sheet_name TEXT,
+                actual_sheet_name TEXT,
+                cell TEXT NOT NULL,
+                cell_range TEXT,
+                item_name TEXT,
+                field TEXT NOT NULL,
+                value TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY(relation_document_id) REFERENCES company_relation_documents(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ledger_cell_values_lookup
+            ON ledger_cell_values(project_id, import_kind, relation_document_id, cell);
+
             CREATE UNIQUE INDEX IF NOT EXISTS idx_company_relation_documents_pair_kind
             ON company_relation_documents(parent_company_id, child_company_id, document_kind);
             """
@@ -342,6 +364,7 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = OFF")
         try:
             self.conn.execute("DELETE FROM relation_document_attachments")
+            self.conn.execute("DELETE FROM ledger_cell_values")
             self.conn.execute("DELETE FROM company_relation_documents")
             self.conn.execute("DELETE FROM attachments")
             self.conn.execute("DELETE FROM required_documents")
@@ -406,6 +429,107 @@ class Database:
             """,
             (project_id, import_kind),
         )
+
+    def replace_ledger_cell_values(
+        self,
+        project_id: int,
+        import_kind: str,
+        relation_document_id: int | None,
+        mapped_items: list[dict[str, str]],
+    ) -> None:
+        if relation_document_id is None:
+            self.conn.execute(
+                """
+                DELETE FROM ledger_cell_values
+                WHERE project_id = ?
+                  AND import_kind = ?
+                  AND relation_document_id IS NULL
+                """,
+                (project_id, import_kind),
+            )
+        else:
+            self.conn.execute(
+                """
+                DELETE FROM ledger_cell_values
+                WHERE project_id = ?
+                  AND import_kind = ?
+                  AND relation_document_id = ?
+                """,
+                (project_id, import_kind, relation_document_id),
+            )
+
+        ts = now_text()
+        rows = [
+            (
+                project_id,
+                relation_document_id,
+                import_kind,
+                item.get("mapping_no", ""),
+                item.get("sheet_name", ""),
+                item.get("actual_sheet_name", ""),
+                item["cell"],
+                item.get("cell_range", ""),
+                item.get("item_name", ""),
+                item["field"],
+                item.get("value", ""),
+                ts,
+                ts,
+            )
+            for item in mapped_items
+            if item.get("field") != "__sheet_name" and item.get("cell")
+        ]
+        self.conn.executemany(
+            """
+            INSERT INTO ledger_cell_values (
+                project_id, relation_document_id, import_kind, mapping_no,
+                sheet_name, actual_sheet_name, cell, cell_range, item_name,
+                field, value, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        self.conn.commit()
+
+    def list_ledger_cell_values(
+        self,
+        project_id: int,
+        import_kind: str,
+        relation_document_id: int | None = None,
+    ) -> list[sqlite3.Row]:
+        if relation_document_id is None:
+            return self.fetchall(
+                """
+                SELECT *
+                FROM ledger_cell_values
+                WHERE project_id = ?
+                  AND import_kind = ?
+                  AND relation_document_id IS NULL
+                ORDER BY id ASC
+                """,
+                (project_id, import_kind),
+            )
+        return self.fetchall(
+            """
+            SELECT *
+            FROM ledger_cell_values
+            WHERE project_id = ?
+              AND import_kind = ?
+              AND relation_document_id = ?
+            ORDER BY id ASC
+            """,
+            (project_id, import_kind, relation_document_id),
+        )
+
+    def ledger_cell_value_map(
+        self,
+        project_id: int,
+        import_kind: str,
+        relation_document_id: int | None = None,
+    ) -> dict[str, str]:
+        return {
+            row["cell"]: row["value"] or ""
+            for row in self.list_ledger_cell_values(project_id, import_kind, relation_document_id)
+        }
 
     def ensure_relation_document_for_child(self, child_company_id: int) -> int | None:
         child = self.get_company(child_company_id)
@@ -1774,6 +1898,7 @@ class CivilHubApp:
             action = "新規"
 
         self.db.upsert_project_import(project_id, "施工体制台帳", str(record["source_path"]), record["source_sheet"])
+        self.db.replace_ledger_cell_values(project_id, "施工体制台帳", None, self.last_ledger_import_items)
         prime_sync_result = self.sync_prime_contractor_company(project_id, self.last_ledger_import_items)
         self.selection.project_id = project_id
         self.refresh_projects()
@@ -2093,8 +2218,21 @@ class CivilHubApp:
             companies = self.db.list_companies(project["id"])
             root_company = next((row for row in companies if int(row["level"]) == 0), None)
 
+        imported_cell_values = self.db.ledger_cell_value_map(
+            project["id"],
+            "施工体制台帳",
+            relation_document["id"] if relation_document is not None else None,
+        )
         workbook = load_workbook(LEDGER_MASTER_PATH)
-        written_count = write_ledger_mapped_workbook(workbook, project, root_company, child_company, LEDGER_CELL_MAPPING_PATH, LEDGER_CELL_MAPPING_SHEET)
+        written_count = write_ledger_mapped_workbook(
+            workbook,
+            project,
+            root_company,
+            child_company,
+            LEDGER_CELL_MAPPING_PATH,
+            LEDGER_CELL_MAPPING_SHEET,
+            imported_cell_values=imported_cell_values,
+        )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         workbook.save(output_path)
         workbook.close()
@@ -2186,7 +2324,14 @@ class CivilHubApp:
         return read_ledger_mapped_items(xlsx_path, LEDGER_CELL_MAPPING_PATH, LEDGER_CELL_MAPPING_SHEET)
 
     def apply_ledger_mapped_values_to_db(self, xlsx_path: Path, relation_document: sqlite3.Row) -> None:
-        values = self.read_ledger_mapped_values(xlsx_path)
+        mapped_items = self.read_ledger_mapped_items(xlsx_path)
+        values = self.ledger_items_to_values(mapped_items)
+        self.db.replace_ledger_cell_values(
+            relation_document["project_id"],
+            "施工体制台帳",
+            relation_document["id"],
+            mapped_items,
+        )
         project = self.db.get_project(relation_document["project_id"])
         child_company = self.db.get_company(relation_document["child_company_id"])
         if project is not None:

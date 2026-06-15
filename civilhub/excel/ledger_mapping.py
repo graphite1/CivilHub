@@ -34,6 +34,7 @@ def load_ledger_cell_mappings(mapping_path: Path, sheet_name: str = DEFAULT_MAPP
                 continue
             mappings.append(
                 {
+                    "mapping_no": _optional_row_value(row, header_index, "No", ""),
                     "sheet_name": str(source_sheet_name),
                     "cell": str(cell),
                     "cell_range": _optional_row_value(row, header_index, "セル/結合範囲", str(cell)),
