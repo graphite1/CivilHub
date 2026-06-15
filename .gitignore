@@ -1,0 +1,17 @@
+# Local database
+civilhub.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Generated files
+__pycache__/
+*.pyc
+exports/
+
+# Local launcher
+起動.bat
+
+# Handoff samples and screenshots
+handoff/施工体制台帳_サンプル_日本道路.xlsx
+handoff/工事情報Excel取り込み失敗.bmp
