@@ -52,7 +52,8 @@ def write_ledger_mapped_workbook(
     child_company: object | None,
     mapping_path: Path,
     mapping_sheet: str = DEFAULT_MAPPING_SHEET,
-) -> None:
+) -> int:
+    written_count = 0
     for mapping in load_ledger_cell_mappings(mapping_path, mapping_sheet):
         sheet_name = mapping["sheet_name"]
         if sheet_name not in workbook.sheetnames:
@@ -61,6 +62,8 @@ def write_ledger_mapped_workbook(
         if value in (None, ""):
             continue
         workbook[sheet_name][mapping["cell"]] = value
+        written_count += 1
+    return written_count
 
 
 def ledger_field_value(

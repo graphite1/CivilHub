@@ -79,6 +79,18 @@ def provisional_construction_no(project_name: str) -> str:
     return f"CFG_{safe_name}"[:80]
 
 
+def first_non_empty(*values: object) -> str:
+    for value in values:
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def normalize_company_name(value: str) -> str:
+    cleaned = re.sub(r"[（(]\d{10,}[）)]\s*$", "", value.strip())
+    return cleaned.strip()
+
+
 def normalize_label(value: str) -> str:
     return value.replace("\n", "").replace("\r", "").replace("\u3000", "").replace(" ", "").strip()
 
@@ -1762,12 +1774,19 @@ class CivilHubApp:
             action = "新規"
 
         self.db.upsert_project_import(project_id, "施工体制台帳", str(record["source_path"]), record["source_sheet"])
+        prime_sync_result = self.sync_prime_contractor_company(project_id, self.last_ledger_import_items)
         self.selection.project_id = project_id
         self.refresh_projects()
-        self.status_var.set(f"工事情報Excel取込完了: {action} / {record['name']}")
-        self.show_ledger_import_summary(action, record, self.last_ledger_import_items)
+        self.status_var.set(f"工事情報Excel取込完了: {action} / {record['name']} / {prime_sync_result}")
+        self.show_ledger_import_summary(action, record, self.last_ledger_import_items, prime_sync_result)
 
-    def show_ledger_import_summary(self, action: str, record: dict[str, str], mapped_items: list[dict[str, str]]) -> None:
+    def show_ledger_import_summary(
+        self,
+        action: str,
+        record: dict[str, str],
+        mapped_items: list[dict[str, str]],
+        prime_sync_result: str = "",
+    ) -> None:
         filled_items = [item for item in mapped_items if item["field"] != "__sheet_name" and item["value"]]
         preview_lines = []
         for item in filled_items[:12]:
@@ -1782,11 +1801,81 @@ class CivilHubApp:
             (
                 f"取込結果: {action}\n"
                 f"工事名: {record['name']}\n"
+                f"元請会社: {prime_sync_result or '処理なし'}\n"
                 f"OK行の取得対象: {max(len(mapped_items) - 1, 0)} 件\n"
                 f"値あり項目: {len(filled_items)} 件\n\n"
                 f"取得値の一部:\n{preview}"
             ),
         )
+
+    def sync_prime_contractor_company(self, project_id: int, mapped_items: list[dict[str, str]]) -> str:
+        values = self.ledger_items_to_values(mapped_items)
+        payload = self.build_prime_contractor_payload(project_id, values)
+        prime_name = payload["name"]
+        if not prime_name:
+            return "元請会社名なしのためスキップ"
+
+        root_companies = [company for company in self.db.list_companies(project_id) if int(company["level"]) == 0]
+        same_name_company = next((company for company in root_companies if normalize_company_name(company["name"] or "") == prime_name), None)
+
+        if same_name_company is not None:
+            self.db.update_company(same_name_company["id"], self.merge_company_payload(payload, same_name_company))
+            return f"元請更新: {prime_name}"
+
+        if root_companies:
+            existing_names = "、".join(company["name"] for company in root_companies if company["name"])
+            return f"元請スキップ: 既存元請({existing_names})と名称不一致"
+
+        self.db.create_company(payload)
+        return f"元請追加: {prime_name}"
+
+    def build_prime_contractor_payload(self, project_id: int, values: dict[str, str]) -> dict[str, str | int | None]:
+        prime_name = normalize_company_name(values.get("prime_contractor.basic.company_name_with_corporate_no", ""))
+        return {
+            "project_id": project_id,
+            "parent_company_id": None,
+            "level": 0,
+            "name": prime_name,
+            "kana": "",
+            "representative": "",
+            "address": clean_ledger_address(values.get("prime_contractor.contract_office.address", "")),
+            "phone": "",
+            "license_no": values.get("prime_contractor.permits.permit_number_1", ""),
+            "license_expiry": parse_wareki_free_date(values.get("prime_contractor.permits.permit_date_1", "")),
+            "work_type": first_non_empty(
+                values.get("prime_contractor.basic.work_description_1", ""),
+                values.get("prime_contractor.basic.work_description_2", ""),
+                values.get("prime_contractor.permits.permit_business_type_1", ""),
+            ),
+            "contract_date": parse_wareki_free_date(values.get("project.contract.contract_date", "")),
+            "planned_start_date": parse_wareki_free_date(values.get("project.contract.period_start", "").replace("自", "").strip()),
+            "planned_end_date": parse_wareki_free_date(values.get("project.contract.period_end", "").replace("至", "").strip()),
+            "chief_engineer_name": values.get("prime_contractor.engineers.chief_engineer_name", ""),
+            "chief_engineer_license": values.get("prime_contractor.engineers.chief_engineer_qualification", ""),
+            "safety_manager": "",
+        }
+
+    def merge_company_payload(
+        self,
+        new_payload: dict[str, str | int | None],
+        existing_company: sqlite3.Row,
+    ) -> dict[str, str]:
+        return {
+            "name": str(new_payload["name"] or existing_company["name"] or ""),
+            "kana": str(new_payload["kana"] or existing_company["kana"] or ""),
+            "representative": str(new_payload["representative"] or existing_company["representative"] or ""),
+            "address": str(new_payload["address"] or existing_company["address"] or ""),
+            "phone": str(new_payload["phone"] or existing_company["phone"] or ""),
+            "license_no": str(new_payload["license_no"] or existing_company["license_no"] or ""),
+            "license_expiry": str(new_payload["license_expiry"] or existing_company["license_expiry"] or ""),
+            "work_type": str(new_payload["work_type"] or existing_company["work_type"] or ""),
+            "contract_date": str(new_payload["contract_date"] or existing_company["contract_date"] or ""),
+            "planned_start_date": str(new_payload["planned_start_date"] or existing_company["planned_start_date"] or ""),
+            "planned_end_date": str(new_payload["planned_end_date"] or existing_company["planned_end_date"] or ""),
+            "chief_engineer_name": str(new_payload["chief_engineer_name"] or existing_company["chief_engineer_name"] or ""),
+            "chief_engineer_license": str(new_payload["chief_engineer_license"] or existing_company["chief_engineer_license"] or ""),
+            "safety_manager": str(new_payload["safety_manager"] or existing_company["safety_manager"] or ""),
+        }
 
     def reflect_project_to_ledger(self) -> None:
         project_id = self.selection.project_id
@@ -2005,7 +2094,7 @@ class CivilHubApp:
             root_company = next((row for row in companies if int(row["level"]) == 0), None)
 
         workbook = load_workbook(LEDGER_MASTER_PATH)
-        write_ledger_mapped_workbook(workbook, project, root_company, child_company, LEDGER_CELL_MAPPING_PATH, LEDGER_CELL_MAPPING_SHEET)
+        written_count = write_ledger_mapped_workbook(workbook, project, root_company, child_company, LEDGER_CELL_MAPPING_PATH, LEDGER_CELL_MAPPING_SHEET)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         workbook.save(output_path)
         workbook.close()
@@ -2015,7 +2104,7 @@ class CivilHubApp:
         self.status_var.set(f"施工体制台帳を出力しました: {output_path.name}")
         messagebox.showinfo(
             "施工体制台帳 出力",
-            f"マスターは変更せず、Hub管理版を保存しました。\n\n出力ファイル:\n{output_path.name}\n\n保存先:\n{output_path.parent}",
+            f"マスターは変更せず、Hub管理版を保存しました。\n\n書込件数: {written_count} 件\n\n出力ファイル:\n{output_path.name}\n\n保存先:\n{output_path.parent}",
         )
 
     def load_project_csv(self, csv_path: Path) -> list[dict[str, str]]:
