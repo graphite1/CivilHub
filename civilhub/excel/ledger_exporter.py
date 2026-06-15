@@ -53,22 +53,36 @@ def write_ledger_mapped_workbook(
     mapping_path: Path,
     mapping_sheet: str = DEFAULT_MAPPING_SHEET,
     imported_cell_values: dict[str, str] | None = None,
+    export_mode: str = "selected_contractor_ledger",
 ) -> int:
     written_count = 0
     for mapping in load_ledger_cell_mappings(mapping_path, mapping_sheet):
         sheet_name = mapping["sheet_name"]
         if sheet_name not in workbook.sheetnames:
             continue
+        field = mapping["field"]
+        if not ledger_field_allowed(field, export_mode):
+            continue
         cell = mapping["cell"]
         if imported_cell_values is not None and cell in imported_cell_values:
             value = imported_cell_values[cell]
         else:
-            value = ledger_field_value(mapping["field"], project, root_company, child_company)
+            value = ledger_field_value(field, project, root_company, child_company)
         if value is None:
             continue
         workbook[sheet_name][cell] = value
         written_count += 1
     return written_count
+
+
+def ledger_field_allowed(field: str, export_mode: str) -> bool:
+    if export_mode == "prime_basic":
+        return (
+            field.startswith("project.")
+            or field.startswith("client.")
+            or field.startswith("prime_contractor.")
+        )
+    return True
 
 
 def ledger_field_value(

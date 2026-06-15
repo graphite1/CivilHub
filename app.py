@@ -1199,8 +1199,8 @@ class CivilHubApp:
         left = ttk.Frame(body, padding=10)
         center = ttk.Frame(body, padding=10)
         right = ttk.Frame(body, padding=10)
-        body.add(left, weight=2)
-        body.add(center, weight=3)
+        body.add(left, weight=1)
+        body.add(center, weight=4)
         body.add(right, weight=3)
 
         self.build_project_panel(left)
@@ -1214,7 +1214,7 @@ class CivilHubApp:
         relation_tab = ttk.Frame(bottom, padding=10)
         bottom.add(docs_tab, text="添付書類チェック")
         bottom.add(attach_tab, text="ファイル添付")
-        bottom.add(relation_tab, text="契約関係帳票")
+        bottom.add(relation_tab, text="帳票管理")
         self.build_document_panel(docs_tab)
         self.build_attachment_panel(attach_tab)
         self.build_relation_panel(relation_tab)
@@ -1228,29 +1228,36 @@ class CivilHubApp:
     def build_project_panel(self, parent: ttk.Frame) -> None:
         top = ttk.Frame(parent)
         top.pack(fill=X)
-        ttk.Label(top, text="工事一覧", font=("Yu Gothic UI", 12, "bold")).pack(side=LEFT)
+        ttk.Label(top, text="工事選択", font=("Yu Gothic UI", 12, "bold")).pack(side=LEFT)
 
         ttk.Label(parent, text="工事を選択して、施工体制と添付書類を管理します。").pack(anchor="w", pady=(8, 0))
+
+        self.project_combo_var = StringVar()
+        self.project_combo = ttk.Combobox(parent, textvariable=self.project_combo_var, state="readonly")
+        self.project_combo.pack(fill=X, pady=(8, 0))
+        self.project_combo.bind("<<ComboboxSelected>>", self.on_project_selected)
+
+        self.project_detail_var = StringVar(value="工事が選択されていません。")
+        ttk.Label(parent, textvariable=self.project_detail_var, wraplength=300, justify=LEFT).pack(anchor="w", pady=(6, 0))
 
         primary_buttons = ttk.Frame(parent)
         primary_buttons.pack(fill=X, pady=(8, 0))
         ttk.Button(primary_buttons, text="+ 工事登録", command=self.add_project).pack(side=LEFT)
         ttk.Button(primary_buttons, text="工事編集", command=self.edit_selected_project).pack(side=LEFT, padx=(6, 0))
-
-        ledger_buttons = ttk.Frame(parent)
-        ledger_buttons.pack(fill=X, pady=(6, 0))
-        ttk.Button(ledger_buttons, text="工事情報Excel取込", command=self.import_ledger_excel).pack(side=LEFT)
-        ttk.Button(ledger_buttons, text="工事情報反映コピー", command=self.reflect_project_to_ledger).pack(side=LEFT, padx=(6, 0))
+        ttk.Button(primary_buttons, text="工事削除", command=self.delete_selected_project).pack(side=LEFT, padx=(6, 0))
 
         support_buttons = ttk.Frame(parent)
         support_buttons.pack(fill=X, pady=(6, 0))
         ttk.Button(support_buttons, text="工事再読込", command=self.refresh_projects).pack(side=LEFT)
         ttk.Button(support_buttons, text="CSV取込", command=self.import_projects_csv).pack(side=LEFT, padx=(6, 0))
-        ttk.Button(support_buttons, text="工事削除", command=self.delete_selected_project).pack(side=LEFT, padx=(6, 0))
 
-        self.project_list = tk.Listbox(parent, height=18)
-        self.project_list.pack(fill=BOTH, expand=True, pady=(8, 8))
-        self.project_list.bind("<<ListboxSelect>>", self.on_project_selected)
+        ledger_box = ttk.LabelFrame(parent, text="帳票操作", padding=8)
+        ledger_box.pack(fill=X, pady=(12, 0))
+        ttk.Label(ledger_box, text="選択中の工事を対象に、施工体制台帳を取込・出力します。", wraplength=300, justify=LEFT).pack(anchor="w")
+        ledger_buttons = ttk.Frame(ledger_box)
+        ledger_buttons.pack(fill=X, pady=(8, 0))
+        ttk.Button(ledger_buttons, text="施工体制台帳Excel取込", command=self.import_ledger_excel).pack(side=LEFT)
+        ttk.Button(ledger_buttons, text="元請基本台帳を出力", command=self.reflect_project_to_ledger).pack(side=LEFT, padx=(6, 0))
 
     def build_company_panel(self, parent: ttk.Frame) -> None:
         top = ttk.Frame(parent)
@@ -1336,12 +1343,12 @@ class CivilHubApp:
     def build_relation_panel(self, parent: ttk.Frame) -> None:
         top = ttk.Frame(parent)
         top.pack(fill=X)
-        ttk.Label(top, text="契約関係帳票", font=("Yu Gothic UI", 11, "bold")).pack(side=LEFT)
-        ttk.Button(top, text="帳票取込", command=self.import_relation_document_excel).pack(side=RIGHT)
+        ttk.Label(top, text="会社間帳票管理", font=("Yu Gothic UI", 11, "bold")).pack(side=LEFT)
+        ttk.Button(top, text="選択関係の帳票Excel取込", command=self.import_relation_document_excel).pack(side=RIGHT)
         ttk.Button(top, text="+ 帳票添付", command=self.attach_relation_document_file).pack(side=RIGHT, padx=(0, 6))
         ttk.Label(
             parent,
-            text="施工体制ツリーで子業者を選択すると、親 -> 子 の帳票を操作できます。複数シートExcelは先頭シートを対象にします。",
+            text="施工体制ツリーで子業者を選択すると、親 -> 子 の施工体制台帳または再下請負通知書を操作できます。",
         ).pack(anchor="w", pady=(8, 0))
 
         self.relation_summary_var = StringVar(value="子業者を選択すると、この親子関係に必要な帳票を表示します。")
@@ -1352,7 +1359,7 @@ class CivilHubApp:
         ttk.Button(detail_buttons, text="帳票情報編集", command=self.edit_relation_document_info).pack(side=LEFT)
         ttk.Button(detail_buttons, text="取込元差し替え", command=self.replace_relation_document_file).pack(side=LEFT, padx=(6, 0))
         ttk.Button(detail_buttons, text="登録削除", command=self.clear_relation_document_registration).pack(side=LEFT, padx=(6, 0))
-        ttk.Button(detail_buttons, text="反映コピー作成", command=self.reflect_relation_document).pack(side=LEFT, padx=(6, 0))
+        ttk.Button(detail_buttons, text="選択帳票を出力", command=self.reflect_relation_document).pack(side=LEFT, padx=(6, 0))
         ttk.Button(detail_buttons, text="保存場所を開く", command=self.open_relation_attachment_folder).pack(side=LEFT, padx=(6, 0))
         ttk.Button(detail_buttons, text="ファイルを開く", command=self.open_relation_attachment).pack(side=LEFT, padx=(6, 0))
         ttk.Button(detail_buttons, text="添付登録削除", command=self.delete_relation_attachment_registration).pack(side=LEFT, padx=(6, 0))
@@ -1391,38 +1398,45 @@ class CivilHubApp:
         self.relation_attachment_tree.bind("<<TreeviewSelect>>", self.on_relation_attachment_selected)
 
     def refresh_projects(self) -> None:
-        self.project_list.delete(0, END)
         self.project_map.clear()
-        selected_index: int | None = None
+        options: list[str] = []
+        selected_label: str | None = None
         for row in self.db.list_projects():
             term = f"{row['start_date'] or '-'} - {row['end_date'] or '-'}"
-            line = f"{row['name']} / {row['construction_no']} / {row['client_name']} / {term}"
+            line = f"{row['name']}"
+            if line in self.project_map:
+                line = f"{row['name']} / {row['construction_no'] or row['id']}"
             self.project_map[line] = row["id"]
-            current_index = self.project_list.size()
-            self.project_list.insert(END, line)
+            options.append(line)
             if row["id"] == self.selection.project_id:
-                selected_index = current_index
-        if selected_index is not None:
-            self.project_list.selection_set(selected_index)
-            self.project_list.activate(selected_index)
+                selected_label = line
+
+        self.project_combo["values"] = options
+        if selected_label is not None:
+            self.project_combo_var.set(selected_label)
             self.on_project_selected()
-        elif self.project_list.size() > 0 and self.selection.project_id is None:
-            self.project_list.selection_set(0)
+        elif options and self.selection.project_id is None:
+            self.project_combo_var.set(options[0])
             self.on_project_selected()
-        elif self.project_list.size() == 0:
-            self.project_list.insert(END, "工事が登録されていません。「+ 工事登録」または「工事情報Excel取込」から開始してください。")
+        elif not options:
+            self.project_combo_var.set("")
             self.clear_project_selection()
+            self.project_detail_var.set("工事が登録されていません。「+ 工事登録」または「施工体制台帳Excel取込」から開始してください。")
 
     def on_project_selected(self, _event: object | None = None) -> None:
-        selection = self.project_list.curselection()
-        if not selection:
-            self.clear_project_selection()
-            return
-        label = self.project_list.get(selection[0])
+        label = self.project_combo_var.get()
         if label not in self.project_map:
             self.clear_project_selection()
             return
         self.selection.project_id = self.project_map[label]
+        project = self.db.get_project(self.selection.project_id)
+        if project is not None:
+            term = f"{project['start_date'] or '-'} - {project['end_date'] or '-'}"
+            self.project_detail_var.set(
+                f"工事番号: {project['construction_no'] or '-'}\n"
+                f"発注者: {project['client_name'] or '-'}\n"
+                f"工期: {term}"
+            )
         self.selection.company_id = None
         self.selection.document_id = None
         self.selection.attachment_id = None
@@ -1442,6 +1456,7 @@ class CivilHubApp:
         self.selection.attachment_id = None
         self.selection.relation_document_id = None
         self.selection.relation_attachment_id = None
+        self.project_detail_var.set("工事が選択されていません。")
         self.refresh_company_tree()
         self.refresh_document_tree()
         self.refresh_attachment_tree()
@@ -1623,7 +1638,7 @@ class CivilHubApp:
         if selected_relation is not None:
             self.update_relation_summary(selected_relation)
         else:
-            self.relation_summary_var.set("契約関係帳票を選択すると、対象関係と取込状況を表示します。")
+            self.relation_summary_var.set("会社間帳票を選択すると、対象関係と取込状況を表示します。")
 
     def on_relation_document_selected(self, _event: object | None = None) -> None:
         selected = self.relation_document_tree.selection()
@@ -1654,7 +1669,7 @@ class CivilHubApp:
 
         relation_document_id = self.selection.relation_document_id
         if relation_document_id is None:
-            self.relation_attachment_tree.insert("", END, values=("契約関係帳票を選択すると添付ファイルを表示します", "", "", ""))
+            self.relation_attachment_tree.insert("", END, values=("会社間帳票を選択すると添付ファイルを表示します", "", "", ""))
             return
         for row in self.db.list_relation_attachments(relation_document_id):
             item_id = self.relation_attachment_tree.insert(
@@ -1672,17 +1687,69 @@ class CivilHubApp:
             return
         self.selection.relation_attachment_id = self.relation_attachment_tree_map[selected[0]]
 
+    def format_ledger_detail_rows(self, project_id: int, prefix: str, relation_document_id: int | None = None) -> list[str]:
+        rows = self.db.list_ledger_cell_values(project_id, "施工体制台帳", relation_document_id)
+        if not rows and relation_document_id is not None:
+            rows = self.db.list_ledger_cell_values(project_id, "施工体制台帳", None)
+
+        target_rows = [
+            row
+            for row in rows
+            if (row["field"] or "").startswith(prefix) and row["value"] not in (None, "")
+        ]
+        if not target_rows:
+            return ["帳票由来情報はまだ保存されていません。"]
+
+        categories = [
+            ("基本・契約", (".basic.", ".contract.")),
+            ("建設業許可", (".permits.",)),
+            ("保険", (".insurance.",)),
+            ("技術者・安全衛生", (".engineers.", ".safety.")),
+            ("その他", ()),
+        ]
+        used_ids: set[int] = set()
+        lines: list[str] = []
+        for title, markers in categories:
+            section_rows = []
+            for row in target_rows:
+                row_id = int(row["id"])
+                field = row["field"] or ""
+                if row_id in used_ids:
+                    continue
+                if markers:
+                    if not any(marker in field for marker in markers):
+                        continue
+                elif any(marker in field for _title, marker_group in categories[:-1] for marker in marker_group):
+                    continue
+                section_rows.append(row)
+
+            if not section_rows:
+                continue
+            lines.extend(["", title, "------------------------------"])
+            for index, row in enumerate(section_rows, start=1):
+                used_ids.add(int(row["id"]))
+                item_name = row["item_name"] or row["field"]
+                cell = row["cell"] or ""
+                lines.append(f"{index}. {item_name} ({cell}): {row['value']}")
+        return lines
+
     def update_detail(self, company: sqlite3.Row | None) -> None:
         self.detail_text.configure(state="normal")
         self.detail_text.delete("1.0", END)
         if company is None:
             self.detail_text.insert("1.0", "業者を選択すると詳細を表示します。\n\n工事を選択後、施工体制ツリーから対象業者を選択してください。")
         else:
+            parent_name = ""
+            if company["parent_company_id"] is not None:
+                parent = self.db.get_company(company["parent_company_id"])
+                parent_name = parent["name"] if parent is not None else ""
+
             lines = [
                 "基本情報",
                 "------------------------------",
                 f"会社名: {company['name']}",
                 f"階層: {LEVEL_LABELS.get(company['level'], company['level'])}",
+                f"親会社: {parent_name}",
                 f"会社名カナ: {company['kana'] or ''}",
                 f"代表者名: {company['representative'] or ''}",
                 f"所在地: {company['address'] or ''}",
@@ -1706,6 +1773,20 @@ class CivilHubApp:
                 f"主任技術者資格: {company['chief_engineer_license'] or ''}",
                 f"安全衛生責任者: {company['safety_manager'] or ''}",
             ]
+            relation_document_id = None
+            prefix = "prime_contractor." if int(company["level"]) == 0 else "selected_contractor."
+            if int(company["level"]) > 0:
+                relation_document = self.db.get_relation_document_for_child(company["id"])
+                relation_document_id = relation_document["id"] if relation_document is not None else None
+            lines.extend(
+                [
+                    "",
+                    "帳票由来情報",
+                    "------------------------------",
+                    f"表示対象: {'元請情報' if prefix == 'prime_contractor.' else '下請情報'}",
+                ]
+            )
+            lines.extend(self.format_ledger_detail_rows(company["project_id"], prefix, relation_document_id))
             self.detail_text.insert("1.0", "\n".join(lines))
         self.detail_text.configure(state="disabled")
 
@@ -2223,6 +2304,9 @@ class CivilHubApp:
             "施工体制台帳",
             relation_document["id"] if relation_document is not None else None,
         )
+        if relation_document is not None and not imported_cell_values:
+            imported_cell_values = self.db.ledger_cell_value_map(project["id"], "施工体制台帳", None)
+        export_mode = "selected_contractor_ledger" if relation_document is not None else "prime_basic"
         workbook = load_workbook(LEDGER_MASTER_PATH)
         written_count = write_ledger_mapped_workbook(
             workbook,
@@ -2232,6 +2316,7 @@ class CivilHubApp:
             LEDGER_CELL_MAPPING_PATH,
             LEDGER_CELL_MAPPING_SHEET,
             imported_cell_values=imported_cell_values,
+            export_mode=export_mode,
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         workbook.save(output_path)
