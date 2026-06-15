@@ -15,6 +15,21 @@ import tkinter as tk
 from tkinter import ttk
 from openpyxl import load_workbook
 
+from civilhub.excel.ledger_exporter import (
+    build_ledger_export_path,
+    format_ledger_date,
+    write_ledger_mapped_workbook,
+)
+from civilhub.excel.ledger_importer import (
+    clean_ledger_address,
+    clean_ledger_phone,
+    ledger_items_to_values,
+    load_ledger_project_info,
+    parse_wareki_free_date,
+    read_ledger_mapped_items,
+    read_ledger_mapped_values,
+)
+
 
 APP_TITLE = "CIVIL HUB"
 APP_SUBTITLE = "施工体制台帳作成・添付書類チェックシステム"
@@ -66,91 +81,6 @@ def provisional_construction_no(project_name: str) -> str:
 
 def normalize_label(value: str) -> str:
     return value.replace("\n", "").replace("\r", "").replace("\u3000", "").replace(" ", "").strip()
-
-
-def parse_wareki_free_date(value: str) -> str:
-    match = re.search(r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日", value)
-    if not match:
-        return value.strip()
-    year, month, day = match.groups()
-    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
-
-
-def format_ledger_date(prefix: str, value: str) -> str:
-    if not value:
-        return ""
-    match = re.match(r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$", value)
-    if match:
-        year, month, day = match.groups()
-        return f" {prefix} {int(year)}年{int(month)}月{int(day)}日"
-    return value
-
-
-def clean_ledger_phone(value: str) -> str:
-    cleaned = value.strip()
-    cleaned = cleaned.replace("（TEL", "").replace("(TEL", "")
-    cleaned = cleaned.replace("）", "").replace(")", "")
-    return cleaned.strip()
-
-
-def clean_ledger_address(value: str) -> str:
-    cleaned = value.strip()
-    cleaned = re.sub(r"^〒\s*", "", cleaned)
-    return cleaned.strip()
-
-
-def format_ledger_phone(value: str) -> str:
-    if not value:
-        return ""
-    return f"（TEL　{value}）"
-
-
-def build_ledger_export_path(project_name: str, company_name: str | None = None) -> Path:
-    EXPORTS_ROOT.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    parts = ["施工体制台帳", sanitize_filename(project_name)]
-    if company_name:
-        parts.append(sanitize_filename(company_name))
-    parts.append(timestamp)
-    return EXPORTS_ROOT / ("_".join(parts) + ".xlsx")
-
-
-def load_ledger_cell_mappings() -> list[dict[str, str]]:
-    if not LEDGER_CELL_MAPPING_PATH.exists():
-        raise FileNotFoundError(f"セル対応表が見つかりません: {LEDGER_CELL_MAPPING_PATH}")
-
-    workbook = load_workbook(LEDGER_CELL_MAPPING_PATH, data_only=True)
-    try:
-        sheet = workbook[LEDGER_CELL_MAPPING_SHEET]
-        headers = [cell.value for cell in sheet[1]]
-        header_index = {str(value): index for index, value in enumerate(headers) if value is not None}
-        required = ["シート名", "代表セル", "アプリ項目名候補", "ユーザー確認"]
-        missing = [name for name in required if name not in header_index]
-        if missing:
-            raise ValueError(f"セル対応表に必要な列がありません: {', '.join(missing)}")
-
-        mappings: list[dict[str, str]] = []
-        for row in sheet.iter_rows(min_row=2, values_only=True):
-            confirmation = row[header_index["ユーザー確認"]]
-            if confirmation != "OK":
-                continue
-            sheet_name = row[header_index["シート名"]]
-            cell = row[header_index["代表セル"]]
-            field = row[header_index["アプリ項目名候補"]]
-            if not sheet_name or not cell or not field:
-                continue
-            mappings.append(
-                {
-                    "sheet_name": str(sheet_name),
-                    "cell": str(cell),
-                    "cell_range": str(row[header_index["セル/結合範囲"]]) if "セル/結合範囲" in header_index and row[header_index["セル/結合範囲"]] else str(cell),
-                    "item_name": str(row[header_index["項目名候補"]]) if "項目名候補" in header_index and row[header_index["項目名候補"]] else str(field),
-                    "field": str(field),
-                }
-            )
-        return mappings
-    finally:
-        workbook.close()
 
 
 def build_reflected_copy_path(source_path: Path) -> Path:
@@ -2057,7 +1987,11 @@ class CivilHubApp:
                 child_company = selected_company
                 parent_company = self.db.get_company(selected_company["parent_company_id"])
 
-        output_path = build_ledger_export_path(project["name"] or "工事", child_company["name"] if child_company is not None else None)
+        output_path = build_ledger_export_path(
+            project["name"] or "工事",
+            child_company["name"] if child_company is not None else None,
+            exports_root=EXPORTS_ROOT,
+        )
         confirmed = messagebox.askyesno(
             "施工体制台帳 出力",
             f"施工体制台帳マスターは変更せず、exportsへコピーして出力します。\n\n出力予定ファイル:\n{output_path}\n\n実行しますか。",
@@ -2065,8 +1999,13 @@ class CivilHubApp:
         if not confirmed:
             return
 
+        root_company = parent_company
+        if root_company is None:
+            companies = self.db.list_companies(project["id"])
+            root_company = next((row for row in companies if int(row["level"]) == 0), None)
+
         workbook = load_workbook(LEDGER_MASTER_PATH)
-        self.write_ledger_mapped_workbook(workbook, project, parent_company, child_company)
+        write_ledger_mapped_workbook(workbook, project, root_company, child_company, LEDGER_CELL_MAPPING_PATH, LEDGER_CELL_MAPPING_SHEET)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         workbook.save(output_path)
         workbook.close()
@@ -2145,162 +2084,17 @@ class CivilHubApp:
             rows.append(record)
         return rows
 
-    def load_ledger_project_info(self, xlsx_path: Path) -> dict[str, str] | None:
-        mapped_items = self.read_ledger_mapped_items(xlsx_path)
-        values = self.ledger_items_to_values(mapped_items)
-
-        project_name = values.get("project.basic.name", "")
-        if not project_name:
-            return None
-
-        return {
-            "name": project_name,
-            "client_name": values.get("client.name", ""),
-            "start_date": parse_wareki_free_date(values.get("project.contract.period_start", "").replace("自", "").strip()),
-            "end_date": parse_wareki_free_date(values.get("project.contract.period_end", "").replace("至", "").strip()),
-            "site_agent": values.get("prime_contractor.engineers.site_agent_name", ""),
-            "managing_engineer": values.get("prime_contractor.engineers.chief_engineer_name", ""),
-            "chief_engineer": values.get("prime_contractor.engineers.chief_engineer_name", ""),
-            "source_path": str(xlsx_path),
-            "source_sheet": values.get("__sheet_name", ""),
-            "mapped_items": mapped_items,
-        }
+    def load_ledger_project_info(self, xlsx_path: Path) -> dict[str, object] | None:
+        return load_ledger_project_info(xlsx_path, LEDGER_CELL_MAPPING_PATH, LEDGER_CELL_MAPPING_SHEET)
 
     def read_ledger_mapped_values(self, xlsx_path: Path) -> dict[str, str]:
-        return self.ledger_items_to_values(self.read_ledger_mapped_items(xlsx_path))
+        return read_ledger_mapped_values(xlsx_path, LEDGER_CELL_MAPPING_PATH, LEDGER_CELL_MAPPING_SHEET)
 
     def ledger_items_to_values(self, mapped_items: list[dict[str, str]]) -> dict[str, str]:
-        values: dict[str, str] = {}
-        for item in mapped_items:
-            if item["field"] == "__sheet_name":
-                values["__sheet_name"] = item["actual_sheet_name"]
-                continue
-            if not item["value"]:
-                continue
-            values[item["field"]] = item["value"]
-        return values
+        return ledger_items_to_values(mapped_items)
 
     def read_ledger_mapped_items(self, xlsx_path: Path) -> list[dict[str, str]]:
-        mappings = load_ledger_cell_mappings()
-        workbook = load_workbook(xlsx_path, data_only=True)
-        try:
-            source_sheet_name = workbook.sheetnames[0]
-            source_sheet = workbook[source_sheet_name]
-            mapped_items: list[dict[str, str]] = [
-                {
-                    "sheet_name": source_sheet_name,
-                    "actual_sheet_name": source_sheet_name,
-                    "cell": "",
-                    "cell_range": "",
-                    "item_name": "読取シート",
-                    "field": "__sheet_name",
-                    "value": source_sheet_name,
-                }
-            ]
-            for mapping in mappings:
-                sheet_name = mapping["sheet_name"]
-                if sheet_name in workbook.sheetnames:
-                    actual_sheet_name = sheet_name
-                    sheet = workbook[sheet_name]
-                else:
-                    actual_sheet_name = source_sheet_name
-                    sheet = source_sheet
-                value = sheet[mapping["cell"]].value
-                mapped_items.append(
-                    {
-                        "sheet_name": mapping["sheet_name"],
-                        "actual_sheet_name": actual_sheet_name,
-                        "cell": mapping["cell"],
-                        "cell_range": mapping["cell_range"],
-                        "item_name": mapping["item_name"],
-                        "field": mapping["field"],
-                        "value": "" if value in (None, "") else str(value).strip(),
-                    }
-                )
-            return mapped_items
-        finally:
-            workbook.close()
-
-    def write_ledger_mapped_workbook(
-        self,
-        workbook: object,
-        project: sqlite3.Row,
-        parent_company: sqlite3.Row | None,
-        child_company: sqlite3.Row | None,
-    ) -> None:
-        for mapping in load_ledger_cell_mappings():
-            sheet_name = mapping["sheet_name"]
-            if sheet_name not in workbook.sheetnames:
-                continue
-            value = self.ledger_field_value(mapping["field"], project, parent_company, child_company)
-            if value in (None, ""):
-                continue
-            workbook[sheet_name][mapping["cell"]] = value
-
-    def ledger_field_value(
-        self,
-        field: str,
-        project: sqlite3.Row,
-        parent_company: sqlite3.Row | None,
-        child_company: sqlite3.Row | None,
-    ) -> str:
-        root_company = parent_company
-        if root_company is None:
-            companies = self.db.list_companies(project["id"])
-            root_company = next((row for row in companies if int(row["level"]) == 0), None)
-
-        project_values = {
-            "project.basic.name": project["name"] or "",
-            "selected_contractor.basic.project_name": project["name"] or "",
-            "client.name": project["client_name"] or "",
-            "project.contract.period_start": format_ledger_date("自", project["start_date"] or ""),
-            "project.contract.period_end": format_ledger_date("至", project["end_date"] or ""),
-            "prime_contractor.engineers.site_agent_name": project["site_agent"] or "",
-            "prime_contractor.engineers.chief_engineer_name": project["managing_engineer"] or project["chief_engineer"] or "",
-        }
-        if field in project_values:
-            return project_values[field]
-
-        if field.startswith("prime_contractor.") and root_company is not None:
-            return self.company_ledger_field_value(field, root_company, is_prime=True)
-        if field.startswith("selected_contractor.") and child_company is not None:
-            return self.company_ledger_field_value(field, child_company, is_prime=False)
-        return ""
-
-    def company_ledger_field_value(self, field: str, company: sqlite3.Row, is_prime: bool) -> str:
-        if field.endswith(".company_name_with_corporate_no") or field.endswith(".office_name"):
-            return company["name"] or ""
-        if field.endswith(".representative_name"):
-            return company["representative"] or ""
-        if field.endswith(".address"):
-            return company["address"] or ""
-        if field.endswith(".phone"):
-            return format_ledger_phone(company["phone"] or "")
-        if field.endswith(".work_description") or field.endswith(".work_description_1") or field.endswith(".work_description_2"):
-            return company["work_type"] or ""
-        if field.endswith(".period_start"):
-            return format_ledger_date("自", company["planned_start_date"] or "")
-        if field.endswith(".period_end"):
-            return format_ledger_date("至", company["planned_end_date"] or "")
-        if field.endswith(".contract_date"):
-            return format_ledger_date("", company["contract_date"] or "").strip()
-        if field.endswith(".permit_business_type_1"):
-            return company["work_type"] or ""
-        if field.endswith(".permit_number_1"):
-            return company["license_no"] or ""
-        if field.endswith(".permit_date_1"):
-            return format_ledger_date("", company["license_expiry"] or "").strip()
-        if field.endswith(".safety_health_manager_name"):
-            return company["safety_manager"] or ""
-        if field.endswith(".chief_engineer_name"):
-            return company["chief_engineer_name"] or ""
-        if field.endswith(".chief_engineer_qualification"):
-            return company["chief_engineer_license"] or ""
-        if field.endswith(".chief_engineer_assignment_type"):
-            return "専任" if company["chief_engineer_name"] else ""
-        if is_prime and field.endswith(".site_agent_name"):
-            return company["representative"] or ""
-        return ""
+        return read_ledger_mapped_items(xlsx_path, LEDGER_CELL_MAPPING_PATH, LEDGER_CELL_MAPPING_SHEET)
 
     def apply_ledger_mapped_values_to_db(self, xlsx_path: Path, relation_document: sqlite3.Row) -> None:
         values = self.read_ledger_mapped_values(xlsx_path)
@@ -2340,6 +2134,7 @@ class CivilHubApp:
             self.db.update_company(child_company["id"], company_payload)
 
     def write_project_to_ledger_sheet(self, sheet: object, project: sqlite3.Row) -> None:
+        # TODO: 旧方式の直接セル指定処理。セル対応表方式へ統一後に削除候補。
         name = project["name"] or ""
         client_name = project["client_name"] or ""
         start_date = project["start_date"] or ""
@@ -2370,6 +2165,7 @@ class CivilHubApp:
         occurrence: int = 0,
         value_index: int = 0,
     ) -> str:
+        # TODO: 旧方式のラベル探索処理。セル対応表方式へ統一後に削除候補。
         normalized_labels = [normalize_label(label) for label in candidate_labels]
         matches: list[tuple[int, int]] = []
         for row in sheet.iter_rows():
